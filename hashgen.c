@@ -1457,6 +1457,7 @@ process_dir_vrfy(const char *dir)
 	return ret;
 }
 
+#ifndef BUILD_LIB
 int
 main(int argc, char *argv[])
 {
@@ -1508,3 +1509,4 @@ main(int argc, char *argv[])
 
 	return ret;
 }
+#endif
