@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <fcntl.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <time.h>
@@ -768,6 +769,7 @@ process_dir_gen(const char *dir)
 {
 	char path[8192];
 	int newhashes;
+	int curdirfd;
 
 	snprintf(path, sizeof(path), "%s/metadata/layout.conf", dir);
 	if ((newhashes = parse_layout_conf(path)) != 0) {
@@ -776,6 +778,10 @@ process_dir_gen(const char *dir)
 		return "generation must be done on a full tree";
 	}
 
+	if ((curdirfd = open(".", O_RDONLY)) < 0) {
+		fprintf(stderr, "cannot open current directory?!? %s\n",
+				strerror(errno));
+	}
 	if (chdir(dir) != 0) {
 		fprintf(stderr, "cannot chdir() to %s: %s\n", dir, strerror(errno));
 		return "not a directory";
@@ -783,6 +789,10 @@ process_dir_gen(const char *dir)
 
 	if (generate_dir(".\0", GLOBAL_MANIFEST) == NULL)
 		return "generation failed";
+
+	/* return to where we were before we called this function */
+	fchdir(curdirfd);
+	close(curdirfd);
 
 	return NULL;
 }
@@ -935,7 +945,7 @@ verify_file(const char *dir, char *mfline, const char *mfest)
 	fsize = strtoll(size, NULL, 10);
 	if (fsize == 0 && errno == EINVAL) {
 		fprintf(stderr, "%s: corrupt manifest line, size is not a number: %s\n",
-				dir + 2, size);
+				mfest, size);
 		return 1;
 	}
 
@@ -1418,6 +1428,7 @@ process_dir_vrfy(const char *dir)
 	struct timeval startt;
 	struct timeval finisht;
 	double etime;
+	int curdirfd;
 
 	gettimeofday(&startt, NULL);
 
@@ -1429,6 +1440,10 @@ process_dir_vrfy(const char *dir)
 		return "verification must be done on a full tree";
 	}
 
+	if ((curdirfd = open(".", O_RDONLY)) < 0) {
+		fprintf(stderr, "cannot open current directory?!? %s\n",
+				strerror(errno));
+	}
 	if (chdir(dir) != 0) {
 		fprintf(stderr, "cannot chdir() to %s: %s\n", dir, strerror(errno));
 		return "not a directory";
@@ -1449,6 +1464,10 @@ process_dir_vrfy(const char *dir)
 		ret = "manifest verification failed";
 
 	gettimeofday(&finisht, NULL);
+
+	/* return to where we were before we called this function */
+	fchdir(curdirfd);
+	close(curdirfd);
 
 	etime = ((double)((finisht.tv_sec - startt.tv_sec) * 1000000 +
 				finisht.tv_usec) - (double)startt.tv_usec) / 1000000.0;
