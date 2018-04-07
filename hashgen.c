@@ -1099,7 +1099,7 @@ struct subdir_workload {
 	char **elems;
 };
 
-static char verify_manifest(const char *dir, const char *manifest);
+static char verify_manifest(const char *dir, const char *manifest, char **ts);
 
 static char
 verify_dir(
@@ -1132,7 +1132,7 @@ verify_dir(
 			if (slash != NULL)
 				*slash = '\0';
 			/* else, verify_manifest will fail, so ret will be handled */
-			ret = verify_manifest(dir, *elems + 2);
+			ret = verify_manifest(dir, *elems + 2, NULL);
 		}
 		return ret;
 	}
@@ -1283,7 +1283,7 @@ verify_dir(
 				if (slash != NULL)  /* path should fit in ndir ... */
 					*slash = '\0';
 				if (verify_file(dir, entry, mfest) != 0 ||
-						verify_manifest(ndir, ndir + skiplen + 1) != 0)
+						verify_manifest(ndir, ndir + skiplen + 1, NULL) != 0)
 					ret |= 1;
 			} else {
 				snprintf(ndir, sizeof(ndir), "%s/%.*s", dir,
@@ -1306,18 +1306,24 @@ verify_dir(
 }
 
 static char
-verify_manifest(const char *dir, const char *manifest)
+verify_manifest(const char *dir, const char *manifest, char **timestamp)
 {
 	char buf[8192];
 	FILE *f;
 	gzFile mf;
 	char ret = 0;
+	char *ts = NULL;
 
 	size_t elemssize = 0;
 	size_t elemslen = 0;
 	char **elems = NULL;
 #define append_list(STR) \
-	if (strncmp(STR, "TIMESTAMP ", 10) != 0 || strncmp(STR, "DIST ", 5) != 0) {\
+	if (strncmp(STR, "TIMESTAMP ", 10) == 0) {\
+		if (ts != NULL)\
+			free(ts);\
+		if (timestamp != NULL)\
+			*timestamp = ts = strdup(STR + 10);\
+	} else if (strncmp(STR, "DIST ", 5) != 0) {\
 		char *endp = STR + strlen(STR) - 1;\
 		while (isspace(*endp))\
 			*endp-- = '\0';\
@@ -1429,6 +1435,7 @@ process_dir_vrfy(const char *dir)
 	struct timeval finisht;
 	double etime;
 	int curdirfd;
+	char *timestamp;
 
 	gettimeofday(&startt, NULL);
 
@@ -1460,8 +1467,12 @@ process_dir_vrfy(const char *dir)
 	 *   be there
 	 * - recurse into directories for which Manifest files are defined
 	 */
-	if (verify_manifest(".\0", str_manifest) != 0)
+	if (verify_manifest(".\0", str_manifest, &timestamp) != 0)
 		ret = "manifest verification failed";
+	if (timestamp != NULL) {
+		fprintf(stdout, "%s timestamp: %s\n", str_manifest, timestamp);
+		free(timestamp);
+	}
 
 	gettimeofday(&finisht, NULL);
 
