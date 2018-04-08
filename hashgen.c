@@ -1230,13 +1230,15 @@ verify_dir(
 					subdir = realloc(subdir,
 							subdirsize * sizeof(subdir[0]));
 					if (subdir == NULL) {
-						fprintf(stderr, "out of memory\n");
+						msgs_add(msgs, mfest, NULL, "out of memory allocating "
+								"sublist for %.*s", (int)sublen, entry);
 						return 1;
 					}
 				}
 				subdir[subdirlen] = malloc(sizeof(struct subdir_workload));
 				if (subdir[subdirlen] == NULL) {
-					fprintf(stderr, "out of memory\n");
+					msgs_add(msgs, mfest, NULL, "out of memory allocating "
+							"sublist %.*s entry", (int)sublen, entry);
 					return 1;
 				}
 				subdir[subdirlen]->subdirlen = sublen;
@@ -1378,7 +1380,7 @@ verify_manifest(
 			elemssize += LISTSZ;\
 			elems = realloc(elems, elemssize * sizeof(elems[0]));\
 			if (elems == NULL) {\
-				fprintf(stderr, "out of memory\n");\
+				msgs_add(msgs, buf, NULL, "out of memory expanding file list");\
 				return 1;\
 			}\
 		}\
@@ -1386,7 +1388,7 @@ verify_manifest(
 			STR[5] = 'I';\
 			elems[elemslen] = strdup(STR + 5);\
 			if (elems[elemslen] == NULL) {\
-				fprintf(stderr, "out of memory\n");\
+				msgs_add(msgs, buf, NULL, "out of memory allocating %s", STR);\
 				return 1;\
 			}\
 			elemslen++;\
@@ -1394,7 +1396,7 @@ verify_manifest(
 			STR[7] = 'M';\
 			elems[elemslen] = strdup(STR + 7);\
 			if (elems[elemslen] == NULL) {\
-				fprintf(stderr, "out of memory\n");\
+				msgs_add(msgs, buf, NULL, "out of memory allocating %s", STR);\
 				return 1;\
 			}\
 			elemslen++;\
@@ -1410,7 +1412,7 @@ verify_manifest(
 				elems[elemslen] = strdup(STR + 3);\
 			}\
 			if (elems[elemslen] == NULL) {\
-				fprintf(stderr, "out of memory\n");\
+				msgs_add(msgs, buf, NULL, "out of memory allocating %s", STR);\
 				return 1;\
 			}\
 			elemslen++;\
@@ -1419,7 +1421,7 @@ verify_manifest(
 			size_t slen = strlen(STR + 2) + sizeof("files/");\
 			elems[elemslen] = malloc(slen);\
 			if (elems[elemslen] == NULL) {\
-				fprintf(stderr, "out of memory\n");\
+				msgs_add(msgs, buf, NULL, "out of memory allocating %s", STR);\
 				return 1;\
 			}\
 			snprintf(elems[elemslen], slen, "D files/%s", STR + 4);\
@@ -1430,8 +1432,8 @@ verify_manifest(
 	snprintf(buf, sizeof(buf), "%s/%s", dir, manifest);
 	if (strcmp(manifest, str_manifest) == 0) {
 		if ((f = fopen(buf, "r")) == NULL) {
-			fprintf(stderr, "failed to open %s: %s\n",
-					buf, strerror(errno));
+			msgs_add(msgs, buf, NULL, "failed to open %s: %s\n",
+					manifest, strerror(errno));
 			return 1;
 		}
 		while (fgets(buf, sizeof(buf), f) != NULL) {
@@ -1442,8 +1444,8 @@ verify_manifest(
 			strcmp(manifest, str_manifest_gz) == 0)
 	{
 		if ((mf = gzopen(buf, "rb9")) == NULL) {
-			fprintf(stderr, "failed to open file '%s' for reading: %s\n",
-					buf, strerror(errno));
+			msgs_add(msgs, buf, NULL, "failed to open %s: %s\n",
+					manifest, strerror(errno));
 			return 1;
 		}
 		while (gzgets(mf, buf, sizeof(buf)) != NULL) {
