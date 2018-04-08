@@ -797,6 +797,44 @@ process_dir_gen(const char *dir)
 	return NULL;
 }
 
+/* linked list structure to hold verification complaints */
+typedef struct verify_msg {
+	char *msg;
+	struct verify_msg *next;
+} verify_msg;
+
+static void
+msgs_add(
+		verify_msg **msgs,
+		const char *manifest,
+		const char *ebuild,
+		const char *fmt, ...)
+{
+	char buf[4096];
+	int len;
+	va_list ap;
+	verify_msg *msg;
+
+	if (msgs == NULL || *msgs == NULL)
+		return;
+
+	msg = (*msgs)->next = malloc(sizeof(verify_msg));
+	if (msg == NULL)
+		return;
+
+	len = snprintf(buf, sizeof(buf), "%s:%s:",
+			manifest ? manifest : "",
+			ebuild   ? ebuild   : "");
+
+	va_start(ap, fmt);
+	vsnprintf(buf + len, sizeof(buf) - len, fmt, ap);
+	va_end(ap);
+
+	msg->msg = strdup(buf);
+	msg->next = NULL;
+	*msgs = msg;
+}
+
 static char
 verify_gpg_sig(const char *path)
 {
@@ -903,9 +941,10 @@ verify_gpg_sig(const char *path)
 static size_t checked_manifests = 0;
 static size_t checked_files = 0;
 static size_t failed_files = 0;
+static char strict = 0;
 
 static char
-verify_file(const char *dir, char *mfline, const char *mfest)
+verify_file(const char *dir, char *mfline, const char *mfest, verify_msg **msgs)
 {
 	char *path;
 	char *size;
@@ -929,7 +968,7 @@ verify_file(const char *dir, char *mfline, const char *mfest)
 	path = mfline;
 	p = strchr(path, ' ');
 	if (p == NULL) {
-		fprintf(stderr, "%s: corrupt manifest line: %s\n", mfest, path);
+		msgs_add(msgs, mfest, NULL, "corrupt manifest line: %s", path);
 		return 1;
 	}
 	*p++ = '\0';
@@ -937,15 +976,14 @@ verify_file(const char *dir, char *mfline, const char *mfest)
 	size = p;
 	p = strchr(size, ' ');
 	if (p == NULL) {
-		fprintf(stderr, "%s: corrupt manifest line, need size for %s\n",
-				mfest, path);
+		msgs_add(msgs, mfest, NULL, "corrupt manifest line, need size");
 		return 1;
 	}
 	*p++ = '\0';
 	fsize = strtoll(size, NULL, 10);
 	if (fsize == 0 && errno == EINVAL) {
-		fprintf(stderr, "%s: corrupt manifest line, size is not a number: %s\n",
-				mfest, size);
+		msgs_add(msgs, mfest, NULL, "corrupt manifest line, "
+				"size is not a number: %s", size);
 		return 1;
 	}
 
@@ -954,17 +992,18 @@ verify_file(const char *dir, char *mfline, const char *mfest)
 	get_hashes(buf, sha256, sha512, whrlpl, blak2b, &flen);
 
 	if (flen == 0) {
-		fprintf(stderr, "cannot locate %s/%s\n", dir + 2, path);
+		msgs_add(msgs, mfest, path, "cannot open file!");
 		return 1;
 	}
 
 	checked_files++;
 
 	if (flen != fsize) {
-		printf("%s:%s:\n- file size mismatch\n"
-				"       got: %zd\n"
-				"  expected: %lld\n",
-				mfest, path, flen, fsize);
+		msgs_add(msgs, mfest, path,
+				"file size mismatch\n"
+				"     got: %zd\n"
+				"expected: %lld",
+				flen, fsize);
 		failed_files++;
 		return 1;
 	}
@@ -975,8 +1014,8 @@ verify_file(const char *dir, char *mfline, const char *mfest)
 		hashtype = p;
 		p = strchr(hashtype, ' ');
 		if (p == NULL) {
-			fprintf(stderr, "%s: corrupt manifest line, missing hash type\n",
-					mfest);
+			msgs_add(msgs, mfest, path,
+					"corrupt manifest line, missing hash type");
 			return 1;
 		}
 		*p++ = '\0';
@@ -986,88 +1025,86 @@ verify_file(const char *dir, char *mfline, const char *mfest)
 		if (p != NULL)
 			*p++ = '\0';
 
-#define idif(X) if (X == 0) printf("%s:%s:\n", mfest, path);
 		if (strcmp(hashtype, "SHA256") == 0) {
 			if (!(hashes & HASH_SHA256)) {
-				idif(ret);
-				printf("- warning: hash SHA256 ignored as "
-						"it is not enabled for this repository\n");
+				if (strict)
+					msgs_add(msgs, mfest, path,
+							"hash SHA256 is not "
+							"enabled for this repository");
 			} else if (strcmp(hash, sha256) != 0) {
-				idif(ret);
-				printf("- SHA256 hash mismatch\n"
-						"              computed: '%s'\n"
-						"  recorded in manifest: '%s'\n",
+				msgs_add(msgs, mfest, path,
+						"SHA256 hash mismatch\n"
+						"computed: '%s'\n"
+						"Manifest: '%s'",
 						sha256, hash);
 				ret = 1;
 			}
 			sha256[0] = '\0';
 		} else if (strcmp(hashtype, "SHA512") == 0) {
 			if (!(hashes & HASH_SHA512)) {
-				idif(ret);
-				printf("- warning: hash SHA512 ignored as "
-						"it is not enabled for this repository\n");
+				if (strict)
+					msgs_add(msgs, mfest, path,
+							"hash SHA512 is not "
+							"enabled for this repository");
 			} else if (strcmp(hash, sha512) != 0) {
-				idif(ret);
-				printf("- SHA512 hash mismatch\n"
-						"              computed: '%s'\n"
-						"  recorded in manifest: '%s'\n",
+				msgs_add(msgs, mfest, path,
+						"SHA512 hash mismatch\n"
+						"computed: '%s'\n"
+						"Manifest: '%s'",
 						sha512, hash);
 				ret = 1;
 			}
 			sha512[0] = '\0';
 		} else if (strcmp(hashtype, "WHIRLPOOL") == 0) {
 			if (!(hashes & HASH_WHIRLPOOL)) {
-				idif(ret);
-				printf("- warning: hash WHIRLPOOL ignored as "
-						"it is not enabled for this repository\n");
+				if (strict)
+					msgs_add(msgs, mfest, path,
+							"hash WHIRLPOOL is not "
+							"enabled for this repository");
 			} else if (strcmp(hash, whrlpl) != 0) {
-				idif(ret);
-				printf("- WHIRLPOOL hash mismatch\n"
-						"              computed: '%s'\n"
-						"  recorded in manifest: '%s'\n",
+				msgs_add(msgs, mfest, path,
+						"WHIRLPOOL hash mismatch\n"
+						"computed: '%s'\n"
+						"Manifest: '%s'",
 						whrlpl, hash);
 				ret = 1;
 			}
 			whrlpl[0] = '\0';
 		} else if (strcmp(hashtype, "BLAKE2B") == 0) {
 			if (!(hashes & HASH_BLAKE2B)) {
-				idif(ret);
-				printf("- warning: hash BLAKE2B ignored as "
-						"it is not enabled for this repository\n");
+				if (strict)
+					msgs_add(msgs, mfest, path,
+							"hash BLAKE2B is not "
+							"enabled for this repository");
 			} else if (strcmp(hash, blak2b) != 0) {
-				idif(ret);
-				printf("- BLAKE2B hash mismatch\n"
-						"              computed: '%s'\n"
-						"  recorded in manifest: '%s'\n",
+				msgs_add(msgs, mfest, path,
+						"BLAKE2B hash mismatch\n"
+						"computed: '%s'\n"
+						"Manifest: '%s'",
 						blak2b, hash);
 				ret = 1;
 			}
 			blak2b[0] = '\0';
 		} else {
-			idif(ret);
-			printf("- unsupported hash: %s\n", hashtype);
+			msgs_add(msgs, mfest, path, "unsupported hash: %s", hashtype);
 			ret = 1;
 		}
 	}
 
 	if (sha256[0] != '\0') {
-		idif(ret);
-		printf("- missing hash: SHA256\n");
+		msgs_add(msgs, mfest, path, "missing hash: SHA256");
 		ret = 1;
 	}
 	if (sha512[0] != '\0') {
-		idif(ret);
-		printf("- missing hash: SHA512\n");
+		msgs_add(msgs, mfest, path, "missing hash: SHA512");
 		ret = 1;
 	}
 	if (whrlpl[0] != '\0') {
-		idif(ret);
-		printf("- missing hash: WHIRLPOOL\n");
+		msgs_add(msgs, mfest, path, "missing hash: WHIRLPOOL");
 		ret = 1;
 	}
 	if (blak2b[0] != '\0') {
-		idif(ret);
-		printf("- missing hash: BLAKE2B\n");
+		msgs_add(msgs, mfest, path, "missing hash: BLAKE2B");
 		ret = 1;
 	}
 
@@ -1099,7 +1136,11 @@ struct subdir_workload {
 	char **elems;
 };
 
-static char verify_manifest(const char *dir, const char *manifest, char **ts);
+static char verify_manifest(
+		const char *dir,
+		const char *manifest,
+		char **timestamp,
+		verify_msg **msgs);
 
 static char
 verify_dir(
@@ -1107,7 +1148,8 @@ verify_dir(
 		char **elems,
 		size_t elemslen,
 		size_t skippath,
-		const char *mfest)
+		const char *mfest,
+		verify_msg **msgs)
 {
 	char **dentries = NULL;
 	size_t dentrieslen = 0;
@@ -1127,12 +1169,12 @@ verify_dir(
 	if (elemslen == 1 && skippath == 0 &&
 			**elems == 'M' && strchr(*elems + 2, '/') == NULL)
 	{
-		if ((ret = verify_file(dir, *elems + 2, mfest)) == 0) {
+		if ((ret = verify_file(dir, *elems + 2, mfest, msgs)) == 0) {
 			slash = strchr(*elems + 2, ' ');
 			if (slash != NULL)
 				*slash = '\0';
 			/* else, verify_manifest will fail, so ret will be handled */
-			ret = verify_manifest(dir, *elems + 2, NULL);
+			ret = verify_manifest(dir, *elems + 2, NULL, msgs);
 		}
 		return ret;
 	}
@@ -1226,7 +1268,7 @@ verify_dir(
 			if (cmp == 0) {
 				/* equal, so yay */
 				if (etpe == 'D') {
-					ret |= verify_file(dir, entry, mfest);
+					ret |= verify_file(dir, entry, mfest, msgs);
 				}
 				/* else this is I(GNORE) or S(ubdir), which means it is
 				 * ok in any way (M shouldn't happen) */
@@ -1241,8 +1283,8 @@ verify_dir(
 					slash = strchr(entry, ' ');
 					if (slash != NULL)
 						*slash = '\0';
-					printf("%s:%s:\n- %s file not found\n",
-							mfest, entry, etpe == 'M' ? "MANIFEST" : "DATA");
+					msgs_add(msgs, mfest, entry, "%s file listed in Manifest, "
+							"but not found", etpe == 'M' ? "MANIFEST" : "DATA");
 					if (slash != NULL)
 						*slash = ' ';
 					failed_files++;
@@ -1251,8 +1293,8 @@ verify_dir(
 			} else if (cmp > 0) {
 				/* dir has extra element */
 				ret |= 1;
-				printf("%s:\n- found excess file: %s\n",
-						mfest, dentries[curdentry]);
+				msgs_add(msgs, mfest, NULL,
+						"file not listed: %s", dentries[curdentry]);
 				curdentry++;
 				failed_files++;
 			}
@@ -1282,15 +1324,16 @@ verify_dir(
 				slash = strchr(ndir + skiplen + 1, ' ');
 				if (slash != NULL)  /* path should fit in ndir ... */
 					*slash = '\0';
-				if (verify_file(dir, entry, mfest) != 0 ||
-						verify_manifest(ndir, ndir + skiplen + 1, NULL) != 0)
+				if (verify_file(dir, entry, mfest, msgs) != 0 ||
+						verify_manifest(ndir, ndir + skiplen + 1,
+							NULL, msgs) != 0)
 					ret |= 1;
 			} else {
 				snprintf(ndir, sizeof(ndir), "%s/%.*s", dir,
 						(int)subdir[cmp]->subdirlen, entry);
 				ret |= verify_dir(ndir, subdir[cmp]->elems,
 						subdir[cmp]->elemslen,
-						skippath + subdir[cmp]->subdirlen + 1, mfest);
+						skippath + subdir[cmp]->subdirlen + 1, mfest, msgs);
 			}
 
 			free(subdir[cmp]);
@@ -1306,7 +1349,11 @@ verify_dir(
 }
 
 static char
-verify_manifest(const char *dir, const char *manifest, char **timestamp)
+verify_manifest(
+		const char *dir,
+		const char *manifest,
+		char **timestamp,
+		verify_msg **msgs)
 {
 	char buf[8192];
 	FILE *f;
@@ -1322,7 +1369,7 @@ verify_manifest(const char *dir, const char *manifest, char **timestamp)
 		if (ts != NULL)\
 			free(ts);\
 		if (timestamp != NULL)\
-			*timestamp = ts = strdup(STR + 10);\
+			*timestamp = ts = strndup(STR + 10, strlen(STR + 10) - 1);\
 	} else if (strncmp(STR, "DIST ", 5) != 0) {\
 		char *endp = STR + strlen(STR) - 1;\
 		while (isspace(*endp))\
@@ -1415,7 +1462,7 @@ verify_manifest(const char *dir, const char *manifest, char **timestamp)
 	 */
 	qsort(elems, elemslen, sizeof(elems[0]), compare_elems);
 	snprintf(buf, sizeof(buf), "%s/%s", dir, manifest);
-	ret = verify_dir(dir, elems, elemslen, 0, buf + 2);
+	ret = verify_dir(dir, elems, elemslen, 0, buf + 2, msgs);
 	checked_manifests++;
 
 	while (elemslen-- > 0)
@@ -1436,6 +1483,8 @@ process_dir_vrfy(const char *dir)
 	double etime;
 	int curdirfd;
 	char *timestamp;
+	verify_msg topmsg;
+	verify_msg *walk = &topmsg;
 
 	gettimeofday(&startt, NULL);
 
@@ -1467,11 +1516,59 @@ process_dir_vrfy(const char *dir)
 	 *   be there
 	 * - recurse into directories for which Manifest files are defined
 	 */
-	if (verify_manifest(".\0", str_manifest, &timestamp) != 0)
+	walk->next = NULL;
+	if (verify_manifest(".\0", str_manifest, &timestamp, &walk) != 0)
 		ret = "manifest verification failed";
 	if (timestamp != NULL) {
 		fprintf(stdout, "%s timestamp: %s\n", str_manifest, timestamp);
 		free(timestamp);
+	}
+	{
+		char *mfest;
+		char *ebuild;
+		char *msg;
+		char *lastmfest = "-";
+		char *lastebuild = "-";
+		char *msgline;
+		char *pfx;
+		verify_msg *next;
+
+		for (walk = topmsg.next; walk != NULL; walk = walk->next) {
+			mfest = walk->msg;
+			ebuild = strchr(mfest, ':');
+			if (ebuild != NULL) {
+				*ebuild++ = '\0';
+				msg = strchr(ebuild, ':');
+				if (msg != NULL)
+					*msg++ = '\0';
+			}
+			if (ebuild != NULL && msg != NULL) {
+				if (strcmp(mfest, lastmfest) != 0 ||
+						strcmp(ebuild, lastebuild) != 0)
+					fprintf(stdout, "%s:%s%s\n",
+							mfest, ebuild, *ebuild == '\0' ? "" : ":");
+
+				lastmfest = mfest;
+				lastebuild = ebuild;
+
+				pfx = "- ";
+				msgline = msg;
+				while ((msgline = strchr(msgline, '\n')) != NULL) {
+					*msgline++ = '\0';
+					fprintf(stdout, "%s%s\n", pfx, msg);
+					pfx = "  ";
+					msg = msgline;
+				}
+				fprintf(stdout, "%s%s\n", pfx, msg);
+			}
+		}
+
+		walk = topmsg.next;
+		while (walk != NULL) {
+			next = walk->next;
+			free(walk);
+			walk = next;
+		}
 	}
 
 	gettimeofday(&finisht, NULL);
