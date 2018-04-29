@@ -1206,7 +1206,6 @@ struct subdir_workload {
 static char verify_manifest(
 		const char *dir,
 		const char *manifest,
-		char **timestamp,
 		verify_msg **msgs);
 
 static char
@@ -1241,7 +1240,7 @@ verify_dir(
 			if (slash != NULL)
 				*slash = '\0';
 			/* else, verify_manifest will fail, so ret will be handled */
-			ret = verify_manifest(dir, *elems + 2, NULL, msgs);
+			ret = verify_manifest(dir, *elems + 2, msgs);
 		}
 		return ret;
 	}
@@ -1394,8 +1393,7 @@ verify_dir(
 				if (slash != NULL)  /* path should fit in ndir ... */
 					*slash = '\0';
 				if (verify_file(dir, entry, mfest, msgs) != 0 ||
-						verify_manifest(ndir, ndir + skiplen + 1,
-							NULL, msgs) != 0)
+						verify_manifest(ndir, ndir + skiplen + 1, msgs) != 0)
 					ret |= 1;
 			} else {
 				snprintf(ndir, sizeof(ndir), "%s/%.*s", dir,
@@ -1421,25 +1419,18 @@ static char
 verify_manifest(
 		const char *dir,
 		const char *manifest,
-		char **timestamp,
 		verify_msg **msgs)
 {
 	char buf[8192];
 	FILE *f;
 	gzFile mf;
 	char ret = 0;
-	char *ts = NULL;
 
 	size_t elemssize = 0;
 	size_t elemslen = 0;
 	char **elems = NULL;
 #define append_list(STR) \
-	if (strncmp(STR, "TIMESTAMP ", 10) == 0) {\
-		if (ts != NULL)\
-			free(ts);\
-		if (timestamp != NULL)\
-			*timestamp = ts = strndup(STR + 10, strlen(STR + 10) - 1);\
-	} else if (strncmp(STR, "DIST ", 5) != 0) {\
+	if (strncmp(STR, "TIMESTAMP ", 10) != 0 || strncmp(STR, "DIST ", 5) != 0) {\
 		char *endp = STR + strlen(STR) - 1;\
 		while (isspace(*endp))\
 			*endp-- = '\0';\
@@ -1542,6 +1533,29 @@ verify_manifest(
 }
 
 static char *
+verify_timestamp(const char *ts)
+{
+	char buf[8192];
+	FILE *f;
+	char *ret = NULL;
+
+	if ((f = fopen(ts, "r")) != NULL) {
+		while (fgets(buf, sizeof(buf), f) != NULL) {
+			if (strncmp(buf, "TIMESTAMP ", 10) == 0) {
+				char *endp = buf + strlen(buf) - 1;
+				while (isspace(*endp))
+					*endp-- = '\0';
+				ret = strdup(buf + 10);
+				break;
+			}
+		}
+		fclose(f);
+	}
+
+	return ret;
+}
+
+static char *
 process_dir_vrfy(const char *dir)
 {
 	char buf[8192];
@@ -1598,6 +1612,13 @@ process_dir_vrfy(const char *dir)
 			free(gs->reason);
 	}
 
+	if ((timestamp = verify_timestamp(str_manifest)) != NULL) {
+		fprintf(stdout, "%s timestamp: %s\n", str_manifest, timestamp);
+		free(timestamp);
+	} else {
+		ret = "manifest timestamp entry missing";
+	}
+
 	/* verification goes like this:
 	 * - verify the signature of the top-level Manifest file (done
 	 *   above)
@@ -1607,13 +1628,9 @@ process_dir_vrfy(const char *dir)
 	 * - recurse into directories for which Manifest files are defined
 	 */
 	walk->next = NULL;
-	timestamp = NULL;
-	if (verify_manifest(".\0", str_manifest, &timestamp, &walk) != 0)
+	if (verify_manifest(".\0", str_manifest, &walk) != 0)
 		ret = "manifest verification failed";
-	if (timestamp != NULL) {
-		fprintf(stdout, "%s timestamp: %s\n", str_manifest, timestamp);
-		free(timestamp);
-	}
+
 	{
 		char *mfest;
 		char *ebuild;
