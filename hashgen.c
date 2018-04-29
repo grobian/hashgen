@@ -876,6 +876,7 @@ typedef struct _gpg_signature {
 	char isgood:1;
 	char *timestamp;
 	char *signer;
+	char *pkfingerprint;
 	char *reason;
 } gpg_sig;
 
@@ -928,6 +929,7 @@ verify_gpg_sig(const char *path, verify_msg **msgs)
 		return NULL;
 	}
 
+	/* we only check/return the first signature */
 	if ((sig = vres->signatures) != NULL) {
 		ret = malloc(sizeof(gpg_sig));
 		if (ret == NULL) {
@@ -953,6 +955,17 @@ verify_gpg_sig(const char *path, verify_msg **msgs)
 			if (gpgme_get_key(g_ctx, sig->fpr, &key, 0) == GPG_ERR_NO_ERROR) {
 				if (key->uids != NULL)
 					ret->signer = strdup(key->uids->uid);
+				if (key->subkeys != NULL) {
+					snprintf(buf, sizeof(buf),
+							"%.4s %.4s %.4s %.4s %.4s  "
+							"%.4s %.4s %.4s %.4s %.4s",
+							key->subkeys->fpr +  0, key->subkeys->fpr +  4,
+							key->subkeys->fpr +  8, key->subkeys->fpr + 12,
+							key->subkeys->fpr + 16, key->subkeys->fpr + 20,
+							key->subkeys->fpr + 24, key->subkeys->fpr + 28,
+							key->subkeys->fpr + 32, key->subkeys->fpr + 36);
+					ret->pkfingerprint = strdup(buf);
+				}
 				gpgme_key_release(key);
 			}
 		}
@@ -1565,18 +1578,22 @@ process_dir_vrfy(const char *dir)
 	if ((gs = verify_gpg_sig(str_manifest, &walk)) == NULL) {
 		ret = "gpg signature invalid";
 	} else {
-		fprintf(stdout, "%s key fingerprint %s\n"
+		fprintf(stdout,
 				"%s signature made %s by\n"
-				"%s\n",
-				gs->algo, gs->fingerprint,
+				"%s\n"
+				"primary key fingerprint %s\n"
+				"%4s subkey fingerprint %s\n",
 				gs->isgood ? "good" : "BAD", gs->timestamp,
-				gs->signer);
+				gs->signer,
+				gs->pkfingerprint,
+				gs->algo, gs->fingerprint);
 		if (!gs->isgood)
 			fprintf(stdout, "reason: %s\n", gs->reason);
 		free(gs->algo);
 		free(gs->fingerprint);
 		free(gs->timestamp);
 		free(gs->signer);
+		free(gs->pkfingerprint);
 		if (!gs->isgood)
 			free(gs->reason);
 	}
