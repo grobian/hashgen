@@ -17,12 +17,12 @@
 #include <zlib.h>
 #include <gpgme.h>
 
-/* Generate thick Manifests based on thin Manifests */
+/* Generate thick Manifests based on thin Manifests, or verify a tree. */
 
 /* In order to build this program, the following packages are required:
  * - app-crypt/libb2 (for BLAKE2, for as long as openssl doesn't include it)
  * - dev-libs/openssl (for SHA, WHIRLPOOL)
- * - sys-libs/zlib (for compressing Manifest files)
+ * - sys-libs/zlib (for compressing/decompressing Manifest files)
  * - app-crypt/gpgme (for signing/verifying the top level manifest)
  * compile like this:
  *   ${CC} -o hashgen -fopenmp ${CFLAGS} \
@@ -115,6 +115,15 @@ update_times(struct timeval *tv, struct stat *s)
 	}
 }
 
+/**
+ * Computes the hashes for file fname and writes the hex-representation
+ * for those hashes into the address space pointed to by the return
+ * pointers for these hashes.  The caller should ensure enough space is
+ * available.  Only those hashes which are in the global hashes variable
+ * are computed, the address space pointed to for non-used hashes are
+ * left untouched, e.g. they can be NULL.  The number of bytes read from
+ * the file pointed to by fname is returned in the flen argument.
+ */
 static void
 get_hashes(
 		const char *fname,
@@ -206,6 +215,9 @@ get_hashes(
 
 #define LISTSZ 64
 
+/**
+ * qsort comparator which runs strcmp.
+ */
 static int
 compare_strings(const void *l, const void *r)
 {
@@ -264,6 +276,12 @@ list_dir(char ***retlist, size_t *retcnt, const char *path)
 	}
 }
 
+/**
+ * Write hashes in Manifest format to the file open for writing m, or
+ * gzipped file open for writing gm.  The hashes written are for a file
+ * in root found by name.  The Manifest entry will be using type as
+ * first component.
+ */
 static void
 write_hashes(
 		struct timeval *tv,
@@ -313,6 +331,11 @@ write_hashes(
 		gzwrite(gm, data, len);
 }
 
+/**
+ * Walk through a directory recursively and write hashes for each file
+ * found to the gzipped open stream for writing zm.  The Manifest
+ * entries generated will all be of DATA type.
+ */
 static char
 write_hashes_dir(
 		struct timeval *tv,
@@ -342,6 +365,11 @@ write_hashes_dir(
 	}
 }
 
+/**
+ * Walk through directory recursively and write hashes for each file
+ * found to the open stream for writing m.  All files will not use the
+ * "files/" prefix and Manifest entries will be of AUX type.
+ */
 static char
 process_files(struct timeval *tv, const char *dir, const char *off, FILE *m)
 {
@@ -368,6 +396,13 @@ process_files(struct timeval *tv, const char *dir, const char *off, FILE *m)
 	}
 }
 
+/**
+ * Read layout.conf file specified by path and extract the
+ * manifest-hashes property from this file.  The hash set specified for
+ * this property will be returned.  When the property isn't found the
+ * returned hash set will be the HASH_DEFAULT set.  When the file isn't
+ * found, 0 will be returned (which means /no/ hashes).
+ */
 static int
 parse_layout_conf(const char *path)
 {
@@ -835,8 +870,17 @@ msgs_add(
 	*msgs = msg;
 }
 
-static char
-verify_gpg_sig(const char *path)
+typedef struct _gpg_signature {
+	char *algo;
+	char *fingerprint;
+	char isgood:1;
+	char *timestamp;
+	char *signer;
+	char *reason;
+} gpg_sig;
+
+static gpg_sig *
+verify_gpg_sig(const char *path, verify_msg **msgs)
 {
 	gpgme_ctx_t g_ctx;
 	gpgme_data_t manifest;
@@ -844,80 +888,90 @@ verify_gpg_sig(const char *path)
 	gpgme_verify_result_t vres;
 	gpgme_signature_t sig;
 	gpgme_key_t key;
-	char buf[32];
+	char buf[64];
 	FILE *f;
 	struct tm *ctime;
-	char ret = 1;  /* fail */
+	gpg_sig *ret = NULL;
 
 	if ((f = fopen(path, "r")) == NULL) {
-		fprintf(stderr, "failed to open %s: %s\n", path, strerror(errno));
-		return ret;
+		msgs_add(msgs, path, NULL, "failed to open: %s", strerror(errno));
+		return NULL;
 	}
 
 	if (gpgme_new(&g_ctx) != GPG_ERR_NO_ERROR) {
-		fprintf(stderr, "failed to create gpgme context\n");
-		return ret;
+		msgs_add(msgs, path, NULL, "failed to create gpgme context");
+		return NULL;
 	}
 
 	if (gpgme_data_new(&out) != GPG_ERR_NO_ERROR) {
-		fprintf(stderr, "failed to create new gpgme data\n");
-		return ret;
+		msgs_add(msgs, path, NULL, "failed to create gpgme data");
+		return NULL;
 	}
 
 	if (gpgme_data_new_from_stream(&manifest, f) != GPG_ERR_NO_ERROR) {
-		fprintf(stderr, "failed to create new gpgme data from stream\n");
-		return ret;
+		msgs_add(msgs, path, NULL,
+				"failed to create new gpgme data from stream");
+		return NULL;
 	}
 
 	if (gpgme_op_verify(g_ctx, manifest, NULL, out) != GPG_ERR_NO_ERROR) {
-		fprintf(stderr, "failed to verify signature\n");
-		return ret;
+		msgs_add(msgs, path, NULL, "failed to verify signature");
+		return NULL;
 	}
 
 	vres = gpgme_op_verify_result(g_ctx);
 	fclose(f);
 
 	if (vres == NULL || vres->signatures == NULL) {
-		fprintf(stderr, "verification failed due to a missing gpg keyring\n");
-		return ret;
+		msgs_add(msgs, path, NULL,
+				"verification failed due to a missing gpg keyring");
+		return NULL;
 	}
 
-	for (sig = vres->signatures; sig != NULL; sig = sig->next) {
+	if ((sig = vres->signatures) != NULL) {
+		ret = malloc(sizeof(gpg_sig));
+		if (ret == NULL) {
+			msgs_add(msgs, path, NULL,
+					"out of memory allocating return structure");
+			gpgme_release(g_ctx);
+			return NULL;
+		}
+
 		if (sig->status != GPG_ERR_NO_PUBKEY) {
-			ctime = gmtime((time_t *)&sig->timestamp);
-			strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", ctime);
-			printf("%s key fingerprint "
-					"%.4s %.4s %.4s %.4s %.4s  %.4s %.4s %.4s %.4s %.4s\n"
-					"%s signature made %s by\n",
-					gpgme_pubkey_algo_name(sig->pubkey_algo),
+			ret->algo = strdup(gpgme_pubkey_algo_name(sig->pubkey_algo));
+			snprintf(buf, sizeof(buf),
+					"%.4s %.4s %.4s %.4s %.4s  %.4s %.4s %.4s %.4s %.4s",
 					sig->fpr +  0, sig->fpr +  4, sig->fpr +  8, sig->fpr + 12,
 					sig->fpr + 16, sig->fpr + 20, sig->fpr + 24, sig->fpr + 28,
-					sig->fpr + 32, sig->fpr + 36,
-					sig->status == GPG_ERR_NO_ERROR ? "good" : "BAD",
-					buf);
+					sig->fpr + 32, sig->fpr + 36);
+			ret->fingerprint = strdup(buf);
+			ret->isgood = sig->status == GPG_ERR_NO_ERROR ? 1 : 0;
+			ctime = gmtime((time_t *)&sig->timestamp);
+			strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S UTC", ctime);
+			ret->timestamp = strdup(buf);
 
 			if (gpgme_get_key(g_ctx, sig->fpr, &key, 0) == GPG_ERR_NO_ERROR) {
-				ret = 0;  /* valid */
 				if (key->uids != NULL)
-					printf("%s\n", key->uids->uid);
+					ret->signer = strdup(key->uids->uid);
 				gpgme_key_release(key);
 			}
 		}
 
 		switch (sig->status) {
 			case GPG_ERR_NO_ERROR:
-				/* nothing, handled above */
+				/* nothing */
+				ret->reason = NULL;
 				break;
 			case GPG_ERR_SIG_EXPIRED:
-				printf("the signature is valid but expired\n");
+				ret->reason = strdup("the signature is valid but expired");
 				break;
 			case GPG_ERR_KEY_EXPIRED:
-				printf("the signature is valid but the key used to verify "
-						"the signature has expired\n");
+				ret->reason = strdup("the signature is valid but the key "
+						"used to verify the signature has expired");
 				break;
 			case GPG_ERR_CERT_REVOKED:
-				printf("the signature is valid but the key used to verify "
-						"the signature has been revoked\n");
+				ret->reason = strdup("the signature is valid but the key "
+						"used to verify the signature has been revoked");
 				break;
 			case GPG_ERR_BAD_SIGNATURE:
 				printf("the signature is invalid\n");
@@ -1487,6 +1541,7 @@ process_dir_vrfy(const char *dir)
 	char *timestamp;
 	verify_msg topmsg;
 	verify_msg *walk = &topmsg;
+	gpg_sig *gs;
 
 	gettimeofday(&startt, NULL);
 
@@ -1507,8 +1562,24 @@ process_dir_vrfy(const char *dir)
 		return "not a directory";
 	}
 
-	if (verify_gpg_sig(str_manifest) != 0)
+	if ((gs = verify_gpg_sig(str_manifest, &walk)) == NULL) {
 		ret = "gpg signature invalid";
+	} else {
+		fprintf(stdout, "%s key fingerprint %s\n"
+				"%s signature made %s by\n"
+				"%s\n",
+				gs->algo, gs->fingerprint,
+				gs->isgood ? "good" : "BAD", gs->timestamp,
+				gs->signer);
+		if (!gs->isgood)
+			fprintf(stdout, "reason: %s\n", gs->reason);
+		free(gs->algo);
+		free(gs->fingerprint);
+		free(gs->timestamp);
+		free(gs->signer);
+		if (!gs->isgood)
+			free(gs->reason);
+	}
 
 	/* verification goes like this:
 	 * - verify the signature of the top-level Manifest file (done
@@ -1519,6 +1590,7 @@ process_dir_vrfy(const char *dir)
 	 * - recurse into directories for which Manifest files are defined
 	 */
 	walk->next = NULL;
+	timestamp = NULL;
 	if (verify_manifest(".\0", str_manifest, &timestamp, &walk) != 0)
 		ret = "manifest verification failed";
 	if (timestamp != NULL) {
