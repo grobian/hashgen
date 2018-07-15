@@ -1189,11 +1189,6 @@ struct subdir_workload {
 	char **elems;
 };
 
-static char verify_manifest(
-		const char *dir,
-		const char *manifest,
-		verify_msg **msgs);
-
 static char
 verify_dir(
 		const char *dir,
