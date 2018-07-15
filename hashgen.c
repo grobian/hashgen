@@ -17,6 +17,8 @@
 #include <zlib.h>
 #include <gpgme.h>
 
+#include "hashgen.h"
+
 /* Generate thick Manifests based on thin Manifests, or verify a tree. */
 
 /* In order to build this program, the following packages are required:
@@ -832,12 +834,6 @@ process_dir_gen(const char *dir)
 	return NULL;
 }
 
-/* linked list structure to hold verification complaints */
-typedef struct verify_msg {
-	char *msg;
-	struct verify_msg *next;
-} verify_msg;
-
 static void
 msgs_add(
 		verify_msg **msgs,
@@ -870,17 +866,7 @@ msgs_add(
 	*msgs = msg;
 }
 
-typedef struct _gpg_signature {
-	char *algo;
-	char *fingerprint;
-	char isgood:1;
-	char *timestamp;
-	char *signer;
-	char *pkfingerprint;
-	char *reason;
-} gpg_sig;
-
-static gpg_sig *
+gpg_sig *
 verify_gpg_sig(const char *path, verify_msg **msgs)
 {
 	gpgme_ctx_t g_ctx;
@@ -1415,7 +1401,7 @@ verify_dir(
 	}
 }
 
-static char
+char
 verify_manifest(
 		const char *dir,
 		const char *manifest,
@@ -1532,7 +1518,7 @@ verify_manifest(
 	return ret;
 }
 
-static char *
+char *
 verify_timestamp(const char *ts)
 {
 	char buf[8192];
@@ -1610,6 +1596,7 @@ process_dir_vrfy(const char *dir)
 		free(gs->pkfingerprint);
 		if (!gs->isgood)
 			free(gs->reason);
+		free(gs);
 	}
 
 	if ((timestamp = verify_timestamp(str_manifest)) != NULL) {
